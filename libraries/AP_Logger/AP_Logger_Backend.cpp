@@ -1,8 +1,21 @@
+#include "AP_Logger_config.h"
+
+#if HAL_LOGGING_ENABLED
+
 #include "AP_Logger_Backend.h"
 
 #include "LoggerMessageWriter.h"
 
+#include "AP_Common/AP_FWVersion.h"
 #include <AP_InternalError/AP_InternalError.h>
+#include <AP_Scheduler/AP_Scheduler.h>
+#include <AP_Rally/AP_Rally.h>
+#include <AP_Vehicle/AP_Vehicle_Type.h>
+#include "AP_Logger.h"
+
+#if HAL_LOGGER_FENCE_ENABLED
+    #include <AC_Fence/AC_Fence.h>
+#endif
 
 extern const AP_HAL::HAL& hal;
 
@@ -170,25 +183,23 @@ void AP_Logger_Backend::WriteMoreStartupMessages()
 bool AP_Logger_Backend::Write_Emit_FMT(uint8_t msg_type)
 {
 #if APM_BUILD_TYPE(APM_BUILD_Replay)
-    // sure, sure we did....
-    return true;
+    if (msg_type < REPLAY_LOG_NEW_MSG_MIN || msg_type > REPLAY_LOG_NEW_MSG_MAX) {
+        // don't re-emit FMU msgs unless they are in the replay range
+        return true;
+    }
 #endif
 
     // get log structure from front end:
-    char ls_name[LS_NAME_SIZE] = {};
-    char ls_format[LS_FORMAT_SIZE] = {};
-    char ls_labels[LS_LABELS_SIZE] = {};
-    char ls_units[LS_UNITS_SIZE] = {};
-    char ls_multipliers[LS_MULTIPLIERS_SIZE] = {};
+    struct AP_Logger::log_write_fmt_strings ls = {};
     struct LogStructure logstruct = {
         // these will be overwritten, but need to keep the compiler happy:
         0,
         0,
-        ls_name,
-        ls_format,
-        ls_labels,
-        ls_units,
-        ls_multipliers
+        ls.name,
+        ls.format,
+        ls.labels,
+        ls.units,
+        ls.multipliers
     };
     if (!_front.fill_log_write_logstructure(logstruct, msg_type)) {
         // this is a bug; we've been asked to write out the FMT
@@ -208,7 +219,7 @@ bool AP_Logger_Backend::Write_Emit_FMT(uint8_t msg_type)
     return true;
 }
 
-bool AP_Logger_Backend::Write(const uint8_t msg_type, va_list arg_list, bool is_critical)
+bool AP_Logger_Backend::Write(const uint8_t msg_type, va_list arg_list, bool is_critical, bool is_streaming)
 {
     // stack-allocate a buffer so we can WriteBlock(); this could be
     // 255 bytes!  If we were willing to lose the WriteBlock
@@ -230,6 +241,7 @@ bool AP_Logger_Backend::Write(const uint8_t msg_type, va_list arg_list, bool is_
     if (bufferspace_available() < msg_len) {
         return false;
     }
+
     uint8_t buffer[msg_len];
     uint8_t offset = 0;
     buffer[offset++] = HEAD_BYTE1;
@@ -330,7 +342,7 @@ bool AP_Logger_Backend::Write(const uint8_t msg_type, va_list arg_list, bool is_
         }
     }
 
-    return WritePrioritisedBlock(buffer, msg_len, is_critical);
+    return WritePrioritisedBlock(buffer, msg_len, is_critical, is_streaming);
 }
 
 bool AP_Logger_Backend::StartNewLogOK() const
@@ -374,6 +386,7 @@ void AP_Logger_Backend::validate_WritePrioritisedBlock(const void *pBuffer,
     }
     const uint8_t type = ((uint8_t*)pBuffer)[2];
     uint8_t type_len;
+    const char *name_src;
     const struct LogStructure *s = _front.structure_for_msg_type(type);
     if (s == nullptr) {
         const struct AP_Logger::log_write_fmt *t = _front.log_write_fmt_for_msg_type(type);
@@ -381,13 +394,15 @@ void AP_Logger_Backend::validate_WritePrioritisedBlock(const void *pBuffer,
             AP_HAL::panic("No structure for msg_type=%u", type);
         }
         type_len = t->msg_len;
+        name_src = t->name;
     } else {
         type_len = s->msg_len;
+        name_src = s->name;
     }
     if (type_len != size) {
         char name[5] = {}; // get a null-terminated string
-        if (s->name != nullptr) {
-            memcpy(name, s->name, 4);
+        if (name_src != nullptr) {
+            memcpy(name, name_src, 4);
         } else {
             strncpy(name, "?NM?", ARRAY_SIZE(name));
         }
@@ -397,7 +412,7 @@ void AP_Logger_Backend::validate_WritePrioritisedBlock(const void *pBuffer,
 }
 #endif
 
-bool AP_Logger_Backend::WritePrioritisedBlock(const void *pBuffer, uint16_t size, bool is_critical)
+bool AP_Logger_Backend::WritePrioritisedBlock(const void *pBuffer, uint16_t size, bool is_critical, bool writev_streaming)
 {
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL && !APM_BUILD_TYPE(APM_BUILD_Replay)
     validate_WritePrioritisedBlock(pBuffer, size);
@@ -411,6 +426,14 @@ bool AP_Logger_Backend::WritePrioritisedBlock(const void *pBuffer, uint16_t size
     if (!WritesOK()) {
         return false;
     }
+
+    if (!is_critical && rate_limiter != nullptr) {
+        const uint8_t *msgbuf = (const uint8_t *)pBuffer;
+        if (!rate_limiter->should_log(msgbuf[2], writev_streaming)) {
+            return false;
+        }
+    }
+
     return _WritePrioritisedBlock(pBuffer, size, is_critical);
 }
 
@@ -433,7 +456,7 @@ bool AP_Logger_Backend::ShouldLog(bool is_critical)
         _front._last_mavlink_log_transfer_message_handled_ms != 0) {
         if (AP_HAL::millis() - _front._last_mavlink_log_transfer_message_handled_ms < 10000) {
             if (!_front.vehicle_is_armed()) {
-                // user is transfering files via mavlink
+                // user is transferring files via mavlink
                 return false;
             }
         } else {
@@ -496,7 +519,8 @@ bool AP_Logger_Backend::Write_RallyPoint(uint8_t total,
         sequence        : sequence,
         latitude        : rally_point.lat,
         longitude       : rally_point.lng,
-        altitude        : rally_point.alt
+        altitude        : rally_point.alt,
+        flags           : rally_point.flags
     };
     return WriteBlock(&pkt_rally, sizeof(pkt_rally));
 }
@@ -508,6 +532,57 @@ bool AP_Logger_Backend::Write_Rally()
     return _startup_messagewriter->writeallrallypoints();
 }
 #endif
+
+#if HAL_LOGGER_FENCE_ENABLED
+// Write a fence point
+bool AP_Logger_Backend::Write_FencePoint(uint8_t total, uint8_t sequence, const AC_PolyFenceItem &fence_point)
+{
+    const struct log_Fence pkt_fence{
+        LOG_PACKET_HEADER_INIT(LOG_FENCE_MSG),
+        time_us         : AP_HAL::micros64(),
+        total           : total,
+        sequence        : sequence,
+        type            : uint8_t(fence_point.type),
+        latitude        : fence_point.loc.x,
+        longitude       : fence_point.loc.y,
+        vertex_count    : fence_point.vertex_count,
+        radius          : fence_point.radius
+    };
+    return WriteBlock(&pkt_fence, sizeof(pkt_fence));
+}
+
+// Write all fence points
+bool AP_Logger_Backend::Write_Fence()
+{
+    // kick off asynchronous write:
+    return _startup_messagewriter->writeallfence();
+}
+#endif // HAL_LOGGER_FENCE_ENABLED
+
+
+bool AP_Logger_Backend::Write_VER()
+{
+    const AP_FWVersion &fwver = AP::fwversion();
+
+    log_VER pkt{
+        LOG_PACKET_HEADER_INIT(LOG_VER_MSG),
+        time_us  : AP_HAL::micros64(),
+        board_type : fwver.board_type,
+        board_subtype: fwver.board_subtype,
+        major: fwver.major,
+        minor: fwver.minor,
+        patch: fwver.patch,
+        fw_type: fwver.fw_type,
+        git_hash: fwver.fw_hash,
+    };
+    strncpy(pkt.fw_string, fwver.fw_string, ARRAY_SIZE(pkt.fw_string)-1);
+
+#ifdef APJ_BOARD_ID
+    pkt._APJ_BOARD_ID = APJ_BOARD_ID;
+#endif
+    pkt.build_type = fwver.vehicle_type;
+    return WriteCriticalBlock(&pkt, sizeof(pkt));
+}
 
 /*
   convert a list entry number back into a log number (which can then
@@ -524,8 +599,9 @@ uint16_t AP_Logger_Backend::log_num_from_list_entry(const uint16_t list_entry)
     }
 
     uint32_t log_num = oldest_log + list_entry - 1;
-    if (log_num > MAX_LOG_FILES) {
-        log_num -= MAX_LOG_FILES;
+    const auto max_logs_num = _front.get_max_num_logs();
+    if (log_num > (uint32_t)max_logs_num) {
+        log_num -= max_logs_num;
     }
     return (uint16_t)log_num;
 }
@@ -550,7 +626,8 @@ uint16_t AP_Logger_Backend::find_oldest_log()
 
 void AP_Logger_Backend::vehicle_was_disarmed()
 {
-    if (_front._params.file_disarm_rot) {
+    if (_front._params.file_disarm_rot &&
+        !_front._params.log_replay) {
         // rotate our log.  Closing the current one and letting the
         // logging restart naturally based on log_disarmed should do
         // the trick:
@@ -606,3 +683,81 @@ void AP_Logger_Backend::df_stats_log() {
     Write_AP_Logger_Stats_File(stats);
     df_stats_clear();
 }
+
+
+// class to handle rate limiting of log messages
+AP_Logger_RateLimiter::AP_Logger_RateLimiter(const AP_Logger &_front, const AP_Float &_limit_hz, const AP_Float &_disarm_limit_hz)
+    : front(_front),
+      rate_limit_hz(_limit_hz),
+      disarm_rate_limit_hz(_disarm_limit_hz)
+{
+}
+
+/*
+  return false if a streaming message should not be sent yet
+ */
+bool AP_Logger_RateLimiter::should_log_streaming(uint8_t msgid, float rate_hz)
+{
+    if (front._log_pause) {
+        return false;
+    }
+    const uint16_t now = AP_HAL::millis16();
+    uint16_t delta_ms = now - last_send_ms[msgid];
+    if (is_positive(rate_hz) && delta_ms < 1000.0 / rate_hz) {
+        // too soon
+        return false;
+    }
+    last_send_ms[msgid] = now;
+    return true;
+}
+
+/*
+  return true if the message is not a streaming message or the gap
+  from the last message is more than the message rate
+ */
+bool AP_Logger_RateLimiter::should_log(uint8_t msgid, bool writev_streaming)
+{
+    float rate_hz = rate_limit_hz;
+    if (!hal.util->get_soft_armed() &&
+        !AP::logger().in_log_persistance() &&
+        !is_zero(disarm_rate_limit_hz)) {
+        rate_hz = disarm_rate_limit_hz;
+    }
+    if (!is_positive(rate_hz) && !front._log_pause) {
+        // no rate limiting if not paused and rate is zero(user changed the parameter)
+        return true;
+    }
+    if (last_send_ms[msgid] == 0 && !writev_streaming) {
+        // might be non streaming. check the not_streaming bitmask
+        // cache
+        if (not_streaming.get(msgid)) {
+            return true;
+        }
+        const auto *mtype = front.structure_for_msg_type(msgid);
+        if (mtype == nullptr ||
+            mtype->streaming == false) {
+            not_streaming.set(msgid);
+            return true;
+        }
+    }
+
+#if !defined(HAL_BUILD_AP_PERIPH)
+    // if we've already decided on sending this msgid in this tick then use the
+    // same decision again
+    const uint16_t sched_ticks = AP::scheduler().ticks();
+    if (sched_ticks == last_sched_count[msgid]) {
+        return last_return.get(msgid);
+    }
+    last_sched_count[msgid] = sched_ticks;
+#endif
+
+    bool ret = should_log_streaming(msgid, rate_hz);
+    if (ret) {
+        last_return.set(msgid);
+    } else {
+        last_return.clear(msgid);
+    }
+    return ret;
+}
+
+#endif  // HAL_LOGGING_ENABLED

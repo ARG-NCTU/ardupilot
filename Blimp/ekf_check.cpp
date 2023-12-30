@@ -148,16 +148,16 @@ void Blimp::failsafe_ekf_event()
     AP::logger().Write_Error(LogErrorSubsystem::FAILSAFE_EKFINAV, LogErrorCode::FAILSAFE_OCCURRED);
 
     // does this mode require position?
-    if (!blimp.flightmode->requires_GPS() && (g.fs_ekf_action != FS_EKF_ACTION_LAND_EVEN_STABILIZE)) {
+    if (!blimp.flightmode->requires_GPS() && (g.fs_ekf_action != FS_EKF_ACTION_LAND_EVEN_MANUAL)) {
         return;
     }
 
     // take action based on fs_ekf_action parameter
     switch (g.fs_ekf_action) {
     case FS_EKF_ACTION_LAND:
-    case FS_EKF_ACTION_LAND_EVEN_STABILIZE:
+    case FS_EKF_ACTION_LAND_EVEN_MANUAL:
     default:
-        set_mode_land_with_pause(ModeReason::EKF_FAILSAFE);
+        set_mode_land_failsafe(ModeReason::EKF_FAILSAFE);
         break;
     }
 }
@@ -185,14 +185,12 @@ void Blimp::check_ekf_reset()
         AP::logger().Write_Event(LogEvent::EKF_YAW_RESET);
     }
 
-#if AP_AHRS_NAVEKF_AVAILABLE && (HAL_NAVEKF2_AVAILABLE || HAL_NAVEKF3_AVAILABLE)
     // check for change in primary EKF, reset attitude target and log.  AC_PosControl handles position target adjustment
     if ((ahrs.get_primary_core_index() != ekf_primary_core) && (ahrs.get_primary_core_index() != -1)) {
         ekf_primary_core = ahrs.get_primary_core_index();
         AP::logger().Write_Error(LogErrorSubsystem::EKF_PRIMARY, LogErrorCode(ekf_primary_core));
         gcs().send_text(MAV_SEVERITY_WARNING, "EKF primary changed:%d", (unsigned)ekf_primary_core);
     }
-#endif
 }
 
 // check for high vibrations affecting altitude control

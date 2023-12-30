@@ -19,8 +19,8 @@ pincount = {
     'G': 16,
     'H': 16,
     'I': 16,
-    'J': 0,
-    'K': 0
+    'J': 16,
+    'K': 8
 }
 
 
@@ -39,6 +39,11 @@ mcu = {
     # this MCU has M7 instructions and hardware double precision
     'CORTEX'    : 'cortex-m7',
     'CPU_FLAGS' : '-mcpu=cortex-m7 -mfpu=fpv5-d16 -mfloat-abi=hard',
+
+    'DEFINES' : {
+        'HAL_HAVE_HARDWARE_DOUBLE' : '1',
+        'STM32F7' : '1',
+    }
 }
 
 DMA_Map = {

@@ -18,6 +18,8 @@
 
 #include "SIM_Morse.h"
 
+#if HAL_SIM_MORSE_ENABLED
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -513,6 +515,7 @@ void Morse::update(const struct sitl_input &input)
                            -state.velocity.world_linear_velocity[2]);
 
     position = Vector3d(state.gps.x, -state.gps.y, -state.gps.z);
+    position.xy() += origin.get_distance_NE_double(home);
 
     // Morse IMU accel is NEU, convert to NED
     accel_body = Vector3f(state.imu.linear_acceleration[0],
@@ -599,7 +602,7 @@ void Morse::send_report(void)
     if (now < 10000) {
         // don't send lidar reports until 10s after startup. This
         // avoids a windows threading issue with non-blocking sockets
-        // and the initial wait on uartA
+        // and the initial wait on SERIAL0
         return;
     }
 #endif
@@ -653,14 +656,11 @@ void Morse::send_report(void)
         }
 
         mavlink_message_t msg;
-        mavlink_status_t *chan0_status = mavlink_get_channel_status(MAVLINK_COMM_0);
-        uint8_t saved_seq = chan0_status->current_tx_seq;
-        chan0_status->current_tx_seq = mavlink.seq;
-        uint16_t len = mavlink_msg_obstacle_distance_encode(
+        uint16_t len = mavlink_msg_obstacle_distance_encode_status(
                 mavlink_system.sysid,
                 13,
+                &mavlink.status,
                 &msg, &packet);
-        chan0_status->current_tx_seq = saved_seq;
 
         uint8_t msgbuf[len];
         len = mavlink_msg_to_send_buffer(msgbuf, &msg);
@@ -670,3 +670,5 @@ void Morse::send_report(void)
     }
 
 }
+
+#endif  // HAL_SIM_MORSE_ENABLED

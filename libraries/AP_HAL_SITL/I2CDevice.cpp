@@ -17,7 +17,7 @@
 #include "I2CDevice.h"
 
 #include <AP_HAL/AP_HAL.h>
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL && !defined(HAL_BUILD_AP_PERIPH)
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 
 #include <SITL/SITL.h>
 
@@ -60,7 +60,7 @@ uint8_t I2CBus::i2c_buscount;
 
 int I2CBus::_ioctl(uint8_t ioctl_number, void *data)
 {
-    SITL::SITL *sitl = AP::sitl();
+    SITL::SIM *sitl = AP::sitl();
     return sitl->i2c_ioctl(ioctl_number, data);
 }
 
@@ -135,7 +135,7 @@ I2CDevice::I2CDevice(I2CBus &bus, uint8_t address)
     : _bus(bus)
     , _address(address)
 {
-    ::fprintf(stderr, "bus.bus=%u address=0x%02x\n", bus.bus, address);
+    // ::fprintf(stderr, "bus.bus=%u address=0x%02x\n", bus.bus, address);
     set_device_bus(bus.bus);
     set_device_address(address);
 }
@@ -217,4 +217,4 @@ bool I2CDevice::adjust_periodic_callback(Device::PeriodicHandle h, uint32_t peri
     return false;
 }
 
-#endif //#if CONFIG_HAL_BOARD == HAL_BOARD_SITL && !defined(HAL_BUILD_AP_PERIPH)
+#endif //#if CONFIG_HAL_BOARD == HAL_BOARD_SITL

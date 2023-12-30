@@ -13,7 +13,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 /*
-  generic CAN sensor class, for easy creation of CAN sensors using prioprietary protocols
+  generic CAN sensor class, for easy creation of CAN sensors using proprietary protocols
  */
 #include <AP_HAL/AP_HAL.h>
 
@@ -30,24 +30,36 @@ extern const AP_HAL::HAL& hal;
 #define debug_can(level_debug, fmt, args...)
 #endif
 
-CANSensor::CANSensor(const char *driver_name, AP_CANManager::Driver_Type dtype, uint16_t stack_size) :
+CANSensor::CANSensor(const char *driver_name, uint16_t stack_size) :
     _driver_name(driver_name),
     _stack_size(stack_size)
+{}
+
+
+void CANSensor::register_driver(AP_CAN::Protocol dtype)
 {
 #if HAL_CANMANAGER_ENABLED
     if (!AP::can().register_driver(dtype, this)) {
-        debug_can(AP_CANManager::LOG_ERROR, "Failed to register CANSensor %s", driver_name);
+        if (AP::can().register_11bit_driver(dtype, this, _driver_index)) {
+            is_aux_11bit_driver = true;
+            _can_driver = AP::can().get_driver(_driver_index);
+            _initialized = true;
+        } else {
+            debug_can(AP_CANManager::LOG_ERROR, "Failed to register CANSensor %s", _driver_name);
+        }
     } else {
-        debug_can(AP_CANManager::LOG_INFO, "%s: constructed", driver_name);
+        debug_can(AP_CANManager::LOG_INFO, "%s: constructed", _driver_name);
     }
 #elif defined(HAL_BUILD_AP_PERIPH)
     register_driver_periph(dtype);
 #endif
 }
+
+
 #ifdef HAL_BUILD_AP_PERIPH
 CANSensor::CANSensor_Periph CANSensor::_periph[HAL_NUM_CAN_IFACES];
 
-void CANSensor::register_driver_periph(const AP_CANManager::Driver_Type dtype)
+void CANSensor::register_driver_periph(const AP_CAN::Protocol dtype)
 {
     for (uint8_t i = 0; i < HAL_NUM_CAN_IFACES; i++) {
         if (_periph[i].protocol != dtype) {
@@ -129,14 +141,18 @@ bool CANSensor::write_frame(AP_HAL::CANFrame &out_frame, const uint64_t timeout_
         return false;
     }
 
+    if (is_aux_11bit_driver && _can_driver != nullptr) {
+        return _can_driver->write_aux_frame(out_frame, timeout_us);
+    }
+
     bool read_select = false;
     bool write_select = true;
-    bool ret = _can_iface->select(read_select, write_select, &out_frame, AP_HAL::native_micros64() + timeout_us);
+    bool ret = _can_iface->select(read_select, write_select, &out_frame, AP_HAL::micros64() + timeout_us);
     if (!ret || !write_select) {
         return false;
     }
 
-    uint64_t deadline = AP_HAL::native_micros64() + 2000000;
+    uint64_t deadline = AP_HAL::micros64() + 2000000;
     return (_can_iface->send(out_frame, deadline, AP_HAL::CANIface::AbortOnError) == 1);
 }
 

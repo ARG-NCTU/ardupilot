@@ -1,5 +1,8 @@
 #include <AP_HAL/AP_HAL.h>
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL && !defined(HAL_BUILD_AP_PERIPH)
+#include <AP_RCProtocol/AP_RCProtocol_config.h>
+
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL && AP_RCPROTOCOL_ENABLED
+
 
 #include "RCInput.h"
 #include <SITL/SITL.h>
@@ -48,7 +51,7 @@ uint16_t RCInput::read(uint8_t ch)
         return 0;
     }
 #ifdef SFML_JOYSTICK
-    SITL::SITL *_sitl = AP::sitl();
+    SITL::SIM *_sitl = AP::sitl();
     if (_sitl) {
         const sf::Joystick::Axis axis = sf::Joystick::Axis(_sitl->sfml_joystick_axis[ch].get());
         const unsigned int stickID = _sitl->sfml_joystick_id;
@@ -81,7 +84,7 @@ uint8_t RCInput::num_channels()
     if (using_rc_protocol) {
         return AP::RC().num_channels();
     }
-    SITL::SITL *_sitl = AP::sitl();
+    SITL::SIM *_sitl = AP::sitl();
     if (_sitl) {
 #ifdef SFML_JOYSTICK
         return (sf::Joystick::isConnected(_sitl->sfml_joystick_id.get())) ? ARRAY_SIZE(_sitl->sfml_joystick_axis) : 0;
